@@ -145,25 +145,27 @@ for epoch in range(1):  # 1 epoch to avoid long runtime
 
 st.write("✅ Model Training Complete!")
 
-# ✅ Streamlit UI for Predictions
-model_choice = st.selectbox("Choose a model:", ["BERT+LSTM", "TF-IDF + Logistic Regression"])
+# ✅ User Input - Predict with Both Models
 user_text = st.text_area("📝 Enter a statement to analyze:")
 
 if st.button("🔍 Analyze"):
     if user_text.strip() == "":
         st.warning("⚠️ Please enter a valid statement.")
     else:
-        if model_choice == "BERT+LSTM":
-            inputs = tokenizer(user_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
-            with torch.no_grad():
-                output = bert_lstm_model(inputs["input_ids"].to(device), inputs["attention_mask"].to(device))
-            pred_label = torch.argmax(output, dim=1).item()
-        else:
-            pred_label = lr_clf.predict([user_text])[0]
+        # ✅ Predict with Logistic Regression (TF-IDF)
+        lr_pred = lr_clf.predict([user_text])[0]
 
-        # ✅ Display Prediction
+        # ✅ Predict with BERT+LSTM
+        inputs = tokenizer(user_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+        with torch.no_grad():
+            output = bert_lstm_model(inputs["input_ids"].to(device), inputs["attention_mask"].to(device))
+        bert_pred = torch.argmax(output, dim=1).item()
+
+        # ✅ Display Predictions
         labels = ["False", "Half-True", "Mostly-True", "True", "Barely-True", "Pants-on-Fire"]
-        st.success(f"✅ **Predicted Verdict:** {labels[pred_label]}")
+        st.write("### 📊 Prediction Results:")
+        st.success(f"✅ **Logistic Regression Prediction:** {labels[lr_pred]}")
+        st.success(f"✅ **BERT+LSTM Prediction:** {labels[bert_pred]}")
 
 st.markdown("---")
 st.markdown("🔬 Developed with AI & Machine Learning | **TrueTell**")
