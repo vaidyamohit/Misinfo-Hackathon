@@ -1,3 +1,4 @@
+import asyncio
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,6 +14,12 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 import nltk
+
+# ✅ Fix Torch async issue in Streamlit
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 # ✅ Download NLTK stopwords
 nltk.download('stopwords')
@@ -30,12 +37,27 @@ def load_data():
         df_train = pd.read_excel(dataset_path, sheet_name="train")
         df_test = pd.read_excel(dataset_path, sheet_name="test")
         df_valid = pd.read_excel(dataset_path, sheet_name="valid")
+
+        # ✅ Normalize column names (remove spaces, lowercase)
+        df_train.columns = df_train.columns.str.strip().str.lower()
+        df_test.columns = df_test.columns.str.strip().str.lower()
+        df_valid.columns = df_valid.columns.str.strip().str.lower()
+
         return df_train, df_test, df_valid
     except FileNotFoundError:
         st.error("⚠️ Dataset.xlsx not found! Please upload the dataset.")
         return None, None, None
 
 df_train, df_test, df_valid = load_data()
+
+# ✅ Debug: Show available columns
+if df_train is not None:
+    st.write("Dataset Columns:", df_train.columns.tolist())
+
+# ✅ Ensure "statement" column exists
+if df_train is not None and "statement" not in df_train.columns:
+    st.error("⚠️ Column 'statement' not found in dataset! Please check Dataset.xlsx")
+    st.stop()
 
 # ✅ Text Cleaning
 def clean_text(text):
