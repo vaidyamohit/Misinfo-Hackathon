@@ -21,9 +21,18 @@ try:
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-# ✅ Download NLTK stopwords
+import nltk
+import ssl
+
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+    ssl._create_default_https_context = _create_unverified_https_context
+except AttributeError:
+    pass
+
 nltk.download('stopwords')
 from nltk.corpus import stopwords
+
 
 # ✅ Load Dataset
 st.title("📰 TrueTell: AI-Powered Misinformation Detector")
