@@ -7,3 +7,4 @@ streamlit
 joblib
 nltk
 numpy
+openpyxl
