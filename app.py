@@ -1,180 +1,167 @@
-import asyncio
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
 import torch
-import joblib
-import os
-from transformers import AutoTokenizer, AutoModel
-import torch.nn as nn
-from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import LabelEncoder
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-import nltk
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndBytesConfig
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+import openai  # API fallback
 
-# ✅ Fix Torch async issue in Streamlit
-try:
-    asyncio.get_running_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
+# ---- SETUP ----
+st.set_page_config(page_title="AI Financial Advisor", layout="wide")
+st.title("💰 AI Financial Advisor - Smart Investment & Budgeting Assistant")
 
-import nltk
-import ssl
+# ---- SIDEBAR: USER PROFILE ----
+st.sidebar.header("User Profile")
+income = st.sidebar.number_input("Monthly Income (₹):", min_value=0.0, step=1000.0, value=50000.0)
+housing = st.sidebar.number_input("Housing Expenses (₹):", min_value=0.0, step=100.0, value=15000.0)
+food = st.sidebar.number_input("Food & Groceries (₹):", min_value=0.0, step=100.0, value=8000.0)
+transport = st.sidebar.number_input("Transport (₹):", min_value=0.0, step=100.0, value=5000.0)
+utilities = st.sidebar.number_input("Utilities (₹):", min_value=0.0, step=100.0, value=3000.0)
+savings_goal = st.sidebar.number_input("Savings Goal (₹):", min_value=0.0, step=1000.0, value=10000.0)
 
-try:
-    _create_unverified_https_context = ssl._create_unverified_context
-    ssl._create_default_https_context = _create_unverified_https_context
-except AttributeError:
-    pass
+expenses = {
+    "Housing": housing,
+    "Food": food,
+    "Transport": transport,
+    "Utilities": utilities
+}
+total_expense = sum(expenses.values())
+actual_savings = income - total_expense
 
-nltk.download('stopwords')
-from nltk.corpus import stopwords
+st.sidebar.markdown(f"💰 **Total Monthly Expenses:** ₹{total_expense}")
+st.sidebar.markdown(f"📈 **Actual Savings:** ₹{actual_savings} (Goal: ₹{savings_goal})")
 
-
-# ✅ Load Dataset
-st.title("📰 TrueTell: AI-Powered Misinformation Detector")
-st.write("🔍 Enter a statement below to check its credibility.")
-
-dataset_path = "Dataset.xlsx"  # Change if using Google Sheets
-
-@st.cache_data
-def load_data():
-    try:
-        df_train = pd.read_excel(dataset_path, sheet_name="train")
-        df_test = pd.read_excel(dataset_path, sheet_name="test")
-        df_valid = pd.read_excel(dataset_path, sheet_name="valid")
-
-        # ✅ Normalize column names (remove spaces, lowercase)
-        df_train.columns = df_train.columns.str.strip().str.lower()
-        df_test.columns = df_test.columns.str.strip().str.lower()
-        df_valid.columns = df_valid.columns.str.strip().str.lower()
-
-        return df_train, df_test, df_valid
-    except FileNotFoundError:
-        st.error("⚠️ Dataset.xlsx not found! Please upload the dataset.")
-        return None, None, None
-
-df_train, df_test, df_valid = load_data()
-
-# ✅ Debug: Show available columns
-if df_train is not None:
-    st.write("Dataset Columns:", df_train.columns.tolist())
-
-# ✅ Ensure "statement" column exists
-if df_train is not None and "statement" not in df_train.columns:
-    st.error("⚠️ Column 'statement' not found in dataset! Please check Dataset.xlsx")
-    st.stop()
-
-# ✅ Text Cleaning
-def clean_text(text):
-    text = str(text).lower()
-    text = re.sub(r'\d+', '', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    text = " ".join([word for word in text.split() if word not in stopwords.words('english')])
-    return text
-
-df_train["clean_statement"] = df_train["statement"].apply(clean_text)
-df_test["clean_statement"] = df_test["statement"].apply(clean_text)
-df_valid["clean_statement"] = df_valid["statement"].apply(clean_text)
-
-# ✅ Encode Labels
-label_encoder = LabelEncoder()
-df_train["label"] = label_encoder.fit_transform(df_train["label"])
-df_test["label"] = label_encoder.transform(df_test["label"])
-df_valid["label"] = label_encoder.transform(df_valid["label"])
-
-# ✅ Train/Validation Split
-train_texts, val_texts, train_labels, val_labels = train_test_split(
-    df_train["clean_statement"], df_train["label"], test_size=0.1, stratify=df_train["label"], random_state=42
+# ---- BUTTONS FOR NAVIGATION ----
+st.subheader("📌 Select a Feature:")
+selected_option = st.radio(
+    "Choose a section:",
+    ["AI Financial Chatbot", "Investment Suggestions", "Fraud Detection System", "Expense Breakdown", "Financial Health Check"],
+    index=0
 )
 
-# ✅ Train Logistic Regression (TF-IDF)
-st.write("🚀 Training Logistic Regression Model...")
-vectorizer = TfidfVectorizer(max_features=5000)
-lr_clf = make_pipeline(vectorizer, LogisticRegression(max_iter=500))
-lr_clf.fit(train_texts, train_labels)
+# ---- LLM-POWERED CHATBOT ----
+if selected_option == "AI Financial Chatbot":
+    st.subheader("💬 AI Financial Chatbot")
+    st.write("Ask me anything about **investments, stock market, budgeting, or savings!**")
 
-# ✅ Define BERT+LSTM Model
-class HybridBERTLSTM(nn.Module):
-    def __init__(self, hidden_dim=128, num_classes=6):
-        super(HybridBERTLSTM, self).__init__()
-        self.bert = AutoModel.from_pretrained('bert-base-uncased')
-        self.lstm = nn.LSTM(768, hidden_dim, batch_first=True, bidirectional=True)
-        self.fc = nn.Linear(hidden_dim * 2, num_classes)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def forward(self, input_ids, attention_mask):
-        with torch.no_grad():
-            bert_output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        lstm_out, _ = self.lstm(bert_output.last_hidden_state)
-        return self.fc(lstm_out[:, -1, :])
+    @st.cache_resource
+    def load_llm():
+        try:
+            model_name = "mistralai/Mistral-7B-v0.1"
+            quant_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16
+            )
 
-# ✅ Train BERT+LSTM Model
-st.write("🚀 Training BERT+LSTM Model (may take time)...")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-bert_lstm_model = HybridBERTLSTM().to(device)
-optimizer = torch.optim.AdamW(bert_lstm_model.parameters(), lr=5e-5)
-criterion = nn.CrossEntropyLoss()
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, device_map="auto", quantization_config=quant_config
+            )
 
-# Convert Data for BERT
-class FakeNewsDataset(torch.utils.data.Dataset):
-    def __init__(self, texts, labels, tokenizer, max_length=128):
-        self.texts = texts.tolist()
-        self.labels = labels.tolist()
-        self.tokenizer = tokenizer
-        self.max_length = max_length
+            return pipeline("text-generation", model=model, tokenizer=tokenizer, device=0 if device == "cuda" else -1)
+        except Exception:
+            st.error("⚠️ Unable to load the local LLM. Switching to OpenAI API...")
+            return None
 
-    def __len__(self):
-        return len(self.texts)
+    llm = load_llm()
+    openai.api_key = "YOUR_OPENAI_API_KEY"  
 
-    def __getitem__(self, idx):
-        encoding = self.tokenizer(self.texts[idx], padding="max_length", truncation=True, max_length=self.max_length, return_tensors="pt")
-        return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "labels": torch.tensor(self.labels[idx], dtype=torch.long)
-        }
+    def openai_fallback(query):
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "You are a financial advisor."},
+                      {"role": "user", "content": query}]
+        )
+        return response["choices"][0]["message"]["content"]
 
-train_dataset = FakeNewsDataset(train_texts, train_labels, tokenizer)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=16, shuffle=True)
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-# Train BERT+LSTM
-for epoch in range(1):  # 1 epoch to avoid long runtime
-    bert_lstm_model.train()
-    for batch in train_loader:
-        input_ids, attention_mask, labels = batch["input_ids"].to(device), batch["attention_mask"].to(device), batch["labels"].to(device)
-        optimizer.zero_grad()
-        outputs = bert_lstm_model(input_ids, attention_mask)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-st.write("✅ Model Training Complete!")
+    user_query = st.chat_input("Ask me about stocks, crypto, real estate, or budget planning!")
 
-# ✅ User Input - Predict with Both Models
-user_text = st.text_area("📝 Enter a statement to analyze:")
+    if user_query:
+        st.session_state.messages.append({"role": "user", "content": user_query})
 
-if st.button("🔍 Analyze"):
-    if user_text.strip() == "":
-        st.warning("⚠️ Please enter a valid statement.")
+        if llm:
+            llm_response = llm(user_query, max_new_tokens=100)[0]["generated_text"]
+        else:
+            llm_response = openai_fallback(user_query)
+
+        st.session_state.messages.append({"role": "assistant", "content": llm_response})
+
+        with st.chat_message("assistant"):
+            st.markdown(llm_response)
+
+# ---- INVESTMENT SUGGESTIONS ----
+elif selected_option == "Investment Suggestions":
+    st.subheader("📊 Investment Suggestions")
+    st.write("💡 **Based on your profile, here are personalized investment options:**")
+
+    if actual_savings > 0:
+        st.success("✅ You have positive savings! Here’s where you could invest:")
+
+        if actual_savings > income * 0.2:
+            st.write("💼 **Stock Market:** Consider investing in blue-chip stocks or index funds.")
+            st.write("🏠 **Real Estate:** If you can afford it, consider a real estate investment.")
+
+        if actual_savings > income * 0.1:
+            st.write("📈 **Mutual Funds:** A good option for diversification.")
+
+        st.write("💳 **Fixed Deposits & Bonds:** Secure, lower-risk investments.")
     else:
-        # ✅ Predict with Logistic Regression (TF-IDF)
-        lr_pred = lr_clf.predict([user_text])[0]
+        st.error("⚠️ Your expenses exceed your income. Focus on saving before investing.")
 
-        # ✅ Predict with BERT+LSTM
-        inputs = tokenizer(user_text, return_tensors="pt", padding=True, truncation=True, max_length=128)
-        with torch.no_grad():
-            output = bert_lstm_model(inputs["input_ids"].to(device), inputs["attention_mask"].to(device))
-        bert_pred = torch.argmax(output, dim=1).item()
+# ---- FRAUD DETECTION SYSTEM ----
+elif selected_option == "Fraud Detection System":
+    st.subheader("🛑 Fraud Detection System")
+    
+    fraud_data = [50, 20, 15, 30, 1500, 80, 100, 5000]
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(np.array(fraud_data).reshape(-1, 1))
 
-        # ✅ Display Predictions
-        labels = ["False", "Half-True", "Mostly-True", "True", "Barely-True", "Pants-on-Fire"]
-        st.write("### 📊 Prediction Results:")
-        st.success(f"✅ **Logistic Regression Prediction:** {labels[lr_pred]}")
-        st.success(f"✅ **BERT+LSTM Prediction:** {labels[bert_pred]}")
+    model = IsolationForest(contamination=0.1, random_state=42)
+    model.fit(scaled_data)
 
-st.markdown("---")
-st.markdown("🔬 Developed with AI & Machine Learning | **TrueTell**")
+    new_transactions = np.array([65, 5000, 25000]).reshape(-1, 1)
+    new_transactions_scaled = scaler.transform(new_transactions)
+    predictions = model.predict(new_transactions_scaled)
+
+    fraud_results = []
+    for amount, pred in zip(new_transactions.flatten(), predictions):
+        if pred == -1:
+            fraud_results.append(f"🚨 Fraud Alert: Transaction of ₹{amount} is suspicious!")
+        else:
+            fraud_results.append(f"✅ Transaction of ₹{amount} looks normal.")
+
+    if st.button("🔍 Run Fraud Check"):
+        for result in fraud_results:
+            st.warning(result)
+
+# ---- EXPENSE BREAKDOWN ----
+elif selected_option == "Expense Breakdown":
+    st.subheader("📉 Expense Breakdown")
+    expense_df = pd.DataFrame(list(expenses.items()), columns=["Category", "Amount"])
+    st.bar_chart(expense_df.set_index("Category"))
+
+# ---- FINANCIAL HEALTH CHECK ----
+elif selected_option == "Financial Health Check":
+    st.subheader("📊 Financial Health Check")
+    
+    st.write("💡 **Suggestions to improve your financial health:**")
+    if actual_savings < savings_goal:
+        st.warning("⚠️ You are not meeting your savings goal. Reduce unnecessary expenses.")
+    
+    if total_expense > income:
+        st.error("⚠️ Your expenses exceed your income. Reduce spending or find additional income sources.")
+    
+    if actual_savings > 0.2 * income:
+        st.success("✅ You are saving more than 20% of your income. Keep it up!")
+
